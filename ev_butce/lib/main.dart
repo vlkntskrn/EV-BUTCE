@@ -1413,6 +1413,85 @@ class _ExpenseBudgetView extends StatelessWidget {
     final keys = <String>{...budgetMap.keys, ...actualMap.keys, ...ccImpact.keys}.toList()
       ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
 
+    double sumBudget = 0, sumActual = 0, sumCc = 0;
+    for (final k in keys) {
+      sumBudget += budgetMap[k] ?? 0;
+      sumActual += actualMap[k] ?? 0;
+      sumCc += ccImpact[k] ?? 0;
+    }
+
+    final budgets = List<BudgetEntry>.from(vm.budgets)
+      ..sort((a, b) => a.category.toLowerCase().compareTo(b.category.toLowerCase()));
+
+    void openAdd() {
+      showModalBottomSheet(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        builder: (_) => Padding(
+          padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+          child: AddBudgetMultiSheet(
+            title: 'Gider Bütçesi • ${vm.labelLong}',
+            initialYear: vm.year,
+            onSubmit: (amount, category, months) {
+              state.addBudgetMulti(amount: amount, category: category, months: months);
+              Navigator.pop(context);
+            },
+          ),
+        ),
+      );
+    }
+
+    void openEdit(BudgetEntry b) {
+      showModalBottomSheet(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        builder: (_) => Padding(
+          padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+          child: AddBudgetMultiSheet(
+            title: 'Bütçe Düzenle • ${vm.labelLong}',
+            initialYear: b.month.year,
+            editingMode: true,
+            initialAmount: b.amount,
+            initialCategory: b.category,
+            initialMonths: [DateTime(b.month.year, b.month.month, 1)],
+            onSubmit: (amount, category, months) {
+              final updated = BudgetEntry(
+                id: b.id,
+                month: b.month,
+                category: b.category, // lock category on edit to avoid re-key issues
+                amount: amount,
+                groupId: b.groupId,
+              );
+              state.updateBudget(updated, applyGroup: false);
+              Navigator.pop(context);
+            },
+          ),
+        ),
+      );
+    }
+
+    void confirmDelete(BudgetEntry b) {
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Sil'),
+          content: Text('${b.category} kalemi silinsin mi?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('İptal')),
+            FilledButton(
+              onPressed: () {
+                state.deleteBudget(b, applyGroup: false);
+                Navigator.pop(context);
+              },
+              child: const Text('Sil'),
+            ),
+          ],
+        ),
+      );
+    }
+
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
@@ -1436,6 +1515,13 @@ class _ExpenseBudgetView extends StatelessWidget {
                     DataCell(Text(fmtMoney(ccImpact[k] ?? 0))),
                     DataCell(Text(fmtMoney((budgetMap[k] ?? 0) - (actualMap[k] ?? 0) - (ccImpact[k] ?? 0)))),
                   ]),
+                DataRow(cells: [
+                  const DataCell(Text('GENEL TOPLAM', style: TextStyle(fontWeight: FontWeight.w900))),
+                  DataCell(Text(fmtMoney(sumBudget), style: const TextStyle(fontWeight: FontWeight.w900))),
+                  DataCell(Text(fmtMoney(sumActual), style: const TextStyle(fontWeight: FontWeight.w900))),
+                  DataCell(Text(fmtMoney(sumCc), style: const TextStyle(fontWeight: FontWeight.w900))),
+                  DataCell(Text(fmtMoney(sumBudget - sumActual - sumCc), style: const TextStyle(fontWeight: FontWeight.w900))),
+                ]),
               ],
             ),
           ),
@@ -1444,25 +1530,27 @@ class _ExpenseBudgetView extends StatelessWidget {
         FilledButton.icon(
           icon: const Icon(Icons.add),
           label: const Text('Gider Bütçesi Ekle (Çoklu Ay)'),
-          onPressed: () {
-            showModalBottomSheet(
-              context: context,
-              showDragHandle: true,
-              isScrollControlled: true,
-              builder: (_) => Padding(
-                padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
-                child: AddBudgetMultiSheet(
-                  title: 'Gider Bütçesi',
-                  initialYear: vm.year,
-                  onSubmit: (amount, category, months) {
-                    state.addBudgetMulti(amount: amount, category: category, months: months);
-                    Navigator.pop(context);
-                  },
-                ),
-              ),
-            );
-          },
+          onPressed: openAdd,
         ),
+        const SizedBox(height: 12),
+        Text('Kalemler', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
+        const SizedBox(height: 8),
+        if (budgets.isEmpty)
+          const _EmptyHint(title: 'Bütçe yok', desc: '“Gider Bütçesi Ekle” ile kalem ekleyin.')
+        else
+          ...budgets.map((b) => Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: _EditableTile(
+                  onEdit: () => openEdit(b),
+                  onDelete: () => confirmDelete(b),
+                  child: _EntryTile(
+                    leading: Icons.account_balance_wallet,
+                    title: b.category,
+                    subtitle: vm.labelLong,
+                    trailing: fmtMoney(b.amount),
+                  ),
+                ),
+              )),
       ],
     );
   }
@@ -1636,6 +1724,8 @@ class SummaryScreen extends StatelessWidget {
                     subtitle: 'Planlı gelir - planlı gider + (devreden + gerçekleşen nakit). Aşım olan kalemlerde gerçekleşen baz alınır.',
                     emphasize: true,
                   ),
+                  const SizedBox(height: 12),
+                  _Grid2(leftTitle: 'Mevcut Nakit', leftValue: fmtMoney(m.carryInCash + m.actualCashIn - m.actualCashOut), rightTitle: 'Mevcut Toplam', rightValue: fmtMoney((m.carryInCash + m.actualCashIn - m.actualCashOut) + m.multinetBalance)),
                   const SizedBox(height: 12),
                   _GlassCard(
                     child: Padding(
@@ -2162,17 +2252,23 @@ class AddBudgetMultiSheet extends StatefulWidget {
   final String title;
   final BudgetMultiSubmit onSubmit;
 
+  /// If editingMode=true, month selection is locked to initialMonths (recommended single month),
+  /// and category/year are locked (to avoid changing keys).
+  final bool editingMode;
   final double? initialAmount;
   final String? initialCategory;
   final int initialYear;
+  final List<DateTime> initialMonths;
 
   const AddBudgetMultiSheet({
     super.key,
     required this.title,
     required this.onSubmit,
     required this.initialYear,
+    this.editingMode = false,
     this.initialAmount,
     this.initialCategory,
+    this.initialMonths = const [],
   });
 
   @override
@@ -2191,39 +2287,55 @@ class _AddBudgetMultiSheetState extends State<AddBudgetMultiSheet> {
     amountCtrl = TextEditingController(text: widget.initialAmount?.toStringAsFixed(0) ?? '');
     category = widget.initialCategory ?? kCategories.first;
     year = widget.initialYear;
+
+    if (widget.initialMonths.isNotEmpty) {
+      selectedMonths = widget.initialMonths.map((d) => d.month).toSet();
+      year = widget.initialMonths.first.year;
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final years = List<int>.generate(11, (i) => DateTime.now().year - 5 + i);
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
       child: Wrap(
         runSpacing: 12,
         children: [
           Text(widget.title, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900)),
-          TextField(controller: amountCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Bütçe Tutarı')),
+          TextField(
+            controller: amountCtrl,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: 'Bütçe Tutarı'),
+          ),
           DropdownButtonFormField<String>(
             value: category,
             items: kCategories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-            onChanged: (v) => setState(() => category = v ?? category),
+            onChanged: widget.editingMode ? null : (v) => setState(() => category = v ?? category),
             decoration: const InputDecoration(labelText: 'Kategori'),
           ),
           DropdownButtonFormField<int>(
             value: year,
             items: years.map((y) => DropdownMenuItem(value: y, child: Text(y.toString()))).toList(),
-            onChanged: (v) => setState(() {
-              year = v ?? year;
-              selectedMonths = {};
-            }),
+            onChanged: widget.editingMode
+                ? null
+                : (v) => setState(() {
+                      year = v ?? year;
+                      selectedMonths = {};
+                    }),
             decoration: const InputDecoration(labelText: 'Yıl'),
           ),
-          _MonthChips(enabled: true, selectedMonths: selectedMonths, onChanged: (s) => setState(() => selectedMonths = s)),
+          _MonthChips(
+            enabled: !widget.editingMode,
+            selectedMonths: selectedMonths,
+            onChanged: (s) => setState(() => selectedMonths = s),
+          ),
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
               icon: const Icon(Icons.check),
-              label: const Text('Ekle'),
+              label: Text(widget.editingMode ? 'Güncelle' : 'Ekle'),
               onPressed: () {
                 final amount = double.tryParse(amountCtrl.text.replaceAll(',', '.'));
                 if (amount == null || amount <= 0) {
@@ -2706,6 +2818,51 @@ class _MetricCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(subtitle, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.black54)),
+        ]),
+      ),
+    );
+  }
+}
+
+
+class _Grid2 extends StatelessWidget {
+  final String leftTitle;
+  final String leftValue;
+  final String rightTitle;
+  final String rightValue;
+  const _Grid2({
+    required this.leftTitle,
+    required this.leftValue,
+    required this.rightTitle,
+    required this.rightValue,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(child: _MiniStat(title: leftTitle, value: leftValue)),
+        const SizedBox(width: 12),
+        Expanded(child: _MiniStat(title: rightTitle, value: rightValue)),
+      ],
+    );
+  }
+}
+
+class _MiniStat extends StatelessWidget {
+  final String title;
+  final String value;
+  const _MiniStat({required this.title, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return _GlassCard(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.black54)),
+          const SizedBox(height: 8),
+          Text(value, style: const TextStyle(fontWeight: FontWeight.w900)),
         ]),
       ),
     );
