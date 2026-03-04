@@ -69,6 +69,50 @@ class EvButceApp extends StatelessWidget {
 
 enum PaymentMethod { cash, debit, creditCard, multinet }
 enum IncomeType { salary, rent, multinet, extra }
+
+enum PayChoice { cash, volkanDebit, zeynepDebit, creditCard }
+
+String payChoiceLabel(PayChoice p) {
+  switch (p) {
+    case PayChoice.cash:
+      return 'Nakit';
+    case PayChoice.volkanDebit:
+      return 'Volkan Hesap Kartı';
+    case PayChoice.zeynepDebit:
+      return 'Zeynep Hesap Kartı';
+    case PayChoice.creditCard:
+      return 'K. Kartı';
+  }
+}
+
+String payTagFromChoice(PayChoice p) {
+  switch (p) {
+    case PayChoice.cash:
+      return 'volkan_cash';
+    case PayChoice.volkanDebit:
+      return 'volkan_debit';
+    case PayChoice.zeynepDebit:
+      return 'zeynep_debit';
+    case PayChoice.creditCard:
+      return 'credit_card';
+  }
+}
+
+String payLabelFromTag(String tag) {
+  switch (tag) {
+    case 'volkan_cash':
+      return 'Nakit';
+    case 'volkan_debit':
+      return 'Volkan Hesap Kartı';
+    case 'zeynep_debit':
+      return 'Zeynep Hesap Kartı';
+    case 'credit_card':
+      return 'K. Kartı';
+    default:
+      return 'Nakit';
+  }
+}
+
 enum AccountKind { cash, bankCard }
 
 String paymentLabel(PaymentMethod m) {
@@ -182,7 +226,8 @@ class ExpenseEntry {
   String description;
 
   PaymentMethod method;
-  String? accountId; // for cash/debit/multinet
+  String payTag; // volkan_cash | volkan_debit | zeynep_debit | credit_card
+  String? accountId; // legacy
   String? cardId; // for credit card
   int? installments;
 
@@ -198,6 +243,7 @@ class ExpenseEntry {
     required this.category,
     required this.description,
     required this.method,
+    this.payTag = 'volkan_cash',
     this.accountId,
     this.cardId,
     this.installments,
@@ -368,6 +414,18 @@ class AppState extends ChangeNotifier {
   double portfolioVolkan = 0;
   double portfolioZeynep = 0;
 
+  void _applyPortfolioDeltaForExpense(ExpenseEntry e, {required bool isAdd}) {
+    if (e.isAutoCcPayment) return;
+    if (e.method == PaymentMethod.creditCard) return;
+    final delta = (isAdd ? -1 : 1) * e.amount;
+    if (e.payTag == 'zeynep_debit') {
+      portfolioZeynep += delta;
+    } else {
+      // Nakit + Volkan debit default
+      portfolioVolkan += delta;
+    }
+  }
+
   AppState()
       : _currentKey = monthKey(DateTime.now().year, DateTime.now().month),
         _budgetViewKey = monthKey(DateTime.now().year, DateTime.now().month) {
@@ -462,7 +520,6 @@ class AppState extends ChangeNotifier {
                 category: (m['category'] ?? '').toString(),
                 description: (m['description'] ?? '').toString(),
                 method: PaymentMethod.values[((m['method'] is num) ? (m['method'] as num).toInt() : 0).clamp(0, PaymentMethod.values.length - 1)],
-                accountId: m['accountId']?.toString(),
                 cardId: m['cardId']?.toString(),
                 installments: (m['installments'] is num) ? (m['installments'] as num).toInt() : null,
                 isAutoCcPayment: m['isAutoCcPayment'] == true,
@@ -536,6 +593,7 @@ class AppState extends ChangeNotifier {
                   'category': x.category,
                   'description': x.description,
                   'method': x.method.index,
+                  'payTag': x.payTag,
                   'accountId': x.accountId,
                   'cardId': x.cardId,
                   'installments': x.installments,
@@ -657,6 +715,7 @@ class AppState extends ChangeNotifier {
   // ---- Actual CRUD ----
   void addActual(ExpenseEntry e) {
     currentLedger.actualExpenses.insert(0, e);
+    _applyPortfolioDeltaForExpense(e, isAdd: true);
     if (e.method == PaymentMethod.creditCard && !e.isAutoCcPayment) {
       _generateCcPaymentsForPurchase(e);
     }
@@ -669,7 +728,9 @@ class AppState extends ChangeNotifier {
     if (idx < 0) return;
 
     final old = list[idx];
+    _applyPortfolioDeltaForExpense(old, isAdd: false);
     list[idx] = updated;
+    _applyPortfolioDeltaForExpense(updated, isAdd: true);
 
     if (old.method == PaymentMethod.creditCard && !old.isAutoCcPayment) {
       _removeCcPaymentsBySource(old.id);
@@ -687,6 +748,7 @@ class AppState extends ChangeNotifier {
 
     final old = list[idx];
     list.removeAt(idx);
+    _applyPortfolioDeltaForExpense(old, isAdd: false);
 
     if (old.method == PaymentMethod.creditCard && !old.isAutoCcPayment) {
       _removeCcPaymentsBySource(old.id);
@@ -856,7 +918,6 @@ class AppState extends ChangeNotifier {
           category: payCat,
           description: 'KK Ödeme (${purchase.category})',
           method: PaymentMethod.debit,
-          accountId: null,
           isAutoCcPayment: true,
           sourcePurchaseId: purchase.id,
           installmentIndex: a.index,
@@ -1140,7 +1201,6 @@ class _HomeShellState extends State<HomeShell> {
         child: AddExpenseSheet(
           title: 'Harcama Ekle • ${state.currentLedger.labelLong}',
           cards: state.cards,
-          accounts: state.accounts,
           initialDate: DateTime.now(),
           onSubmit: (e) {
             state.addActual(e);
@@ -1277,7 +1337,7 @@ class ActualScreen extends StatelessWidget {
                                       subtitle: [
                                         if (e.description.trim().isNotEmpty) e.description.trim(),
                                         if (e.method == PaymentMethod.creditCard) 'Kart: ${state.cardName(e.cardId)} • Taksit: ${e.installments ?? 1}',
-                                        if (e.method != PaymentMethod.creditCard) 'Hesap: ${state.accountName(e.accountId)}',
+                                        if (e.method != PaymentMethod.creditCard) 'Ödeme: ${payLabelFromTag(e.payTag)}',
                                       ].join(' • '),
                                       trailing: fmtMoney(e.amount),
                                     ),
@@ -1308,12 +1368,10 @@ class ActualScreen extends StatelessWidget {
         child: AddExpenseSheet(
           title: 'Harcama Düzenle',
           cards: state.cards,
-          accounts: state.accounts,
           initialAmount: e.amount,
           initialCategory: e.category,
           initialDescription: e.description,
           initialMethod: e.method,
-          initialAccountId: e.accountId,
           initialCardId: e.cardId,
           initialInstallments: e.installments ?? 1,
           initialDate: e.date,
@@ -1327,7 +1385,6 @@ class ActualScreen extends StatelessWidget {
                 category: updated.category,
                 description: updated.description,
                 method: updated.method,
-                accountId: updated.accountId,
                 cardId: updated.cardId,
                 installments: updated.installments,
               ),
@@ -1402,6 +1459,15 @@ class BudgetScreen extends StatelessWidget {
 class _ExpenseBudgetView extends StatelessWidget {
   final AppState state;
   const _ExpenseBudgetView({required this.state});
+
+  Color _budgetRowColor(double budget, double spent) {
+    if (budget <= 0) return Colors.transparent;
+    final r = spent / budget;
+    if (r < 0.5) return Colors.green.withOpacity(0.10);
+    if (r < 0.8) return Colors.orange.withOpacity(0.10);
+    if (r < 1.0) return Colors.purple.withOpacity(0.10);
+    return Colors.red.withOpacity(0.12);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1508,7 +1574,9 @@ class _ExpenseBudgetView extends StatelessWidget {
               ],
               rows: [
                 for (final k in keys)
-                  DataRow(cells: [
+                  DataRow(
+                    color: MaterialStatePropertyAll(_budgetRowColor(budgetMap[k] ?? 0, (actualMap[k] ?? 0) + (ccImpact[k] ?? 0))),
+                    cells: [
                     DataCell(Text(k)),
                     DataCell(Text(fmtMoney(budgetMap[k] ?? 0))),
                     DataCell(Text(fmtMoney(actualMap[k] ?? 0))),
@@ -1850,7 +1918,221 @@ class _MonthCard extends StatelessWidget {
         title: Text(month.labelLong, style: const TextStyle(fontWeight: FontWeight.w900)),
         subtitle: Text('Devreden: ${fmtMoney(month.carryInCash)} • Nakit kapanış: ${fmtMoney(cashEnd)} • Net: ${fmtMoney(net)}'),
         trailing: const Icon(Icons.chevron_right),
+        onTap: () {
+          showModalBottomSheet(
+            context: context,
+            showDragHandle: true,
+            isScrollControlled: true,
+            builder: (_) => MonthDetailsSheet(state: state, month: month),
+          );
+        },
       ),
+    );
+  }
+}
+
+
+class MonthDetailsSheet extends StatelessWidget {
+  final AppState state;
+  final MonthLedger month;
+  const MonthDetailsSheet({super.key, required this.state, required this.month});
+
+  @override
+  Widget build(BuildContext context) {
+    final expenses = List<ExpenseEntry>.from(month.actualExpenses)..sort((a, b) => b.date.compareTo(a.date));
+    final incomes = List<IncomeEntry>.from(month.incomes)..sort((a, b) => b.date.compareTo(a.date));
+    final budgets = List<BudgetEntry>.from(month.budgets)..sort((a, b) => a.category.toLowerCase().compareTo(b.category.toLowerCase()));
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+      child: SafeArea(
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Detay • ${month.labelLong}',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+                  ),
+                ),
+                IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Expanded(
+              child: DefaultTabController(
+                length: 3,
+                child: Column(
+                  children: [
+                    const TabBar(tabs: [
+                      Tab(text: 'Harcama'),
+                      Tab(text: 'Gelir'),
+                      Tab(text: 'Bütçe'),
+                    ]),
+                    Expanded(
+                      child: TabBarView(
+                        children: [
+                          _expensesTab(context, expenses),
+                          _incomesTab(context, incomes),
+                          _budgetsTab(context, budgets),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _expensesTab(BuildContext context, List<ExpenseEntry> items) {
+    if (items.isEmpty) return const Center(child: Text('Harcama yok'));
+    return ListView.separated(
+      padding: const EdgeInsets.only(top: 12, bottom: 12),
+      itemCount: items.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      itemBuilder: (c, i) {
+        final e = items[i];
+        return _EditableTile(
+          onEdit: e.isAutoCcPayment
+              ? null
+              : () {
+                  showModalBottomSheet(
+                    context: context,
+                    showDragHandle: true,
+                    isScrollControlled: true,
+                    builder: (_) => Padding(
+                      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+                      child: AddExpenseSheet(
+                        title: 'Harcama Düzenle',
+                        cards: state.cards,
+                        initialAmount: e.amount,
+                        initialCategory: e.category,
+                        initialDescription: e.description,
+                        initialMethod: e.method,
+                        initialPayTag: e.payTag,
+                        initialCardId: e.cardId,
+                        initialInstallments: e.installments ?? 1,
+                        initialDate: e.date,
+                        onSubmit: (updated) {
+                          state.updateActual(
+                            e.id,
+                            ExpenseEntry(
+                              id: e.id,
+                              date: updated.date,
+                              amount: updated.amount,
+                              category: updated.category,
+                              description: updated.description,
+                              method: updated.method,
+                              payTag: updated.payTag,
+                              cardId: updated.cardId,
+                              installments: updated.installments,
+                            ),
+                          );
+                          Navigator.pop(context);
+                        },
+                      ),
+                    ),
+                  );
+                },
+          onDelete: e.isAutoCcPayment ? null : () => state.deleteActual(e.id),
+          child: _EntryTile(
+            leading: e.isAutoCcPayment ? Icons.credit_score : Icons.payments,
+            title: '${e.category} • ${fmtDate(e.date)}',
+            subtitle: '${e.description.isEmpty ? '-' : e.description} • ${payLabelFromTag(e.payTag)}',
+            trailing: fmtMoney(e.amount),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _incomesTab(BuildContext context, List<IncomeEntry> items) {
+    if (items.isEmpty) return const Center(child: Text('Gelir yok'));
+    return ListView.separated(
+      padding: const EdgeInsets.only(top: 12, bottom: 12),
+      itemCount: items.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      itemBuilder: (c, i) {
+        final inc = items[i];
+        return _EditableTile(
+          onEdit: () {
+            showModalBottomSheet(
+              context: context,
+              showDragHandle: true,
+              isScrollControlled: true,
+              builder: (_) => Padding(
+                padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+                child: AddIncomeSheet(
+                  title: 'Gelir Düzenle',
+                  initialAmount: inc.amount,
+                  initialType: inc.type,
+                  initialDate: inc.date,
+                  initialDescription: inc.description,
+                  onSubmit: (amount, type, date, desc) {
+                    state.updateIncome(inc.id, IncomeEntry(id: inc.id, date: date, amount: amount, type: type, description: desc));
+                    Navigator.pop(context);
+                  },
+                ),
+              ),
+            );
+          },
+          onDelete: () => state.deleteIncome(inc.id),
+          child: _EntryTile(
+            leading: Icons.savings,
+            title: '${incomeTypeLabel(inc.type)} • ${fmtDate(inc.date)}',
+            subtitle: inc.description.isEmpty ? '-' : inc.description,
+            trailing: fmtMoney(inc.amount),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _budgetsTab(BuildContext context, List<BudgetEntry> items) {
+    if (items.isEmpty) return const Center(child: Text('Bütçe yok'));
+    return ListView.separated(
+      padding: const EdgeInsets.only(top: 12, bottom: 12),
+      itemCount: items.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      itemBuilder: (c, i) {
+        final b = items[i];
+        return _EditableTile(
+          onEdit: () {
+            showModalBottomSheet(
+              context: context,
+              showDragHandle: true,
+              isScrollControlled: true,
+              builder: (_) => Padding(
+                padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+                child: AddBudgetMultiSheet(
+                  title: 'Bütçe Düzenle',
+                  initialYear: b.month.year,
+                  editingMode: true,
+                  initialAmount: b.amount,
+                  initialCategory: b.category,
+                  initialMonths: [DateTime(b.month.year, b.month.month, 1)],
+                  onSubmit: (amount, cat, months) {
+                    state.updateBudget(BudgetEntry(id: b.id, month: b.month, category: b.category, amount: amount, groupId: b.groupId), applyGroup: false);
+                    Navigator.pop(context);
+                  },
+                ),
+              ),
+            );
+          },
+          onDelete: () => state.deleteBudget(b, applyGroup: false),
+          child: _EntryTile(
+            leading: Icons.account_balance_wallet,
+            title: b.category,
+            subtitle: month.labelLong,
+            trailing: fmtMoney(b.amount),
+          ),
+        );
+      },
     );
   }
 }
@@ -1863,13 +2145,12 @@ class AddExpenseSheet extends StatefulWidget {
   final String title;
   final ExpenseSubmit onSubmit;
   final List<CreditCardDef> cards;
-  final List<AccountDef> accounts;
 
   final double? initialAmount;
   final String? initialCategory;
   final String? initialDescription;
   final PaymentMethod? initialMethod;
-  final String? initialAccountId;
+  final String? initialPayTag;
   final String? initialCardId;
   final int initialInstallments;
   final DateTime initialDate;
@@ -1879,12 +2160,11 @@ class AddExpenseSheet extends StatefulWidget {
     required this.title,
     required this.onSubmit,
     required this.cards,
-    required this.accounts,
     this.initialAmount,
     this.initialCategory,
     this.initialDescription,
     this.initialMethod,
-    this.initialAccountId,
+    this.initialPayTag,
     this.initialCardId,
     this.initialInstallments = 1,
     required this.initialDate,
@@ -1898,8 +2178,14 @@ class _AddExpenseSheetState extends State<AddExpenseSheet> {
   late final TextEditingController amountCtrl;
   late final TextEditingController descCtrl;
   late String category;
-  late PaymentMethod method;
-  String? accountId;
+  late PayChoice payChoice;
+  PayChoice _fromInitial(PaymentMethod? m, String? tag) {
+    if (m == PaymentMethod.creditCard) return PayChoice.creditCard;
+    if (tag == 'zeynep_debit') return PayChoice.zeynepDebit;
+    if (tag == 'volkan_debit') return PayChoice.volkanDebit;
+    if (tag == 'credit_card') return PayChoice.creditCard;
+    return PayChoice.cash;
+  }
   String? cardId;
   late int installments;
   late DateTime date;
@@ -1910,8 +2196,7 @@ class _AddExpenseSheetState extends State<AddExpenseSheet> {
     amountCtrl = TextEditingController(text: widget.initialAmount?.toStringAsFixed(0) ?? '');
     descCtrl = TextEditingController(text: widget.initialDescription ?? '');
     category = widget.initialCategory ?? kCategories.first;
-    method = widget.initialMethod ?? PaymentMethod.cash;
-    accountId = widget.initialAccountId ?? (widget.accounts.isNotEmpty ? widget.accounts.first.id : null);
+    payChoice = _fromInitial(widget.initialMethod, widget.initialPayTag);
     cardId = widget.initialCardId ?? (widget.cards.isNotEmpty ? widget.cards.first.id : null);
     installments = widget.initialInstallments;
     date = widget.initialDate;
@@ -1919,10 +2204,8 @@ class _AddExpenseSheetState extends State<AddExpenseSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final needCard = method == PaymentMethod.creditCard;
-    final needAccount = method != PaymentMethod.creditCard;
+    final needCard = payChoice == PayChoice.creditCard;
     final cards = widget.cards;
-    final accounts = widget.accounts;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
@@ -1945,20 +2228,12 @@ class _AddExpenseSheetState extends State<AddExpenseSheet> {
             controller: descCtrl,
             decoration: const InputDecoration(labelText: 'Açıklama', prefixIcon: Icon(Icons.notes)),
           ),
-          DropdownButtonFormField<PaymentMethod>(
-            value: method,
-            items: PaymentMethod.values.map((m) => DropdownMenuItem(value: m, child: Text(paymentLabel(m)))).toList(),
-            onChanged: (v) => setState(() => method = v ?? method),
+          DropdownButtonFormField<PayChoice>(
+            value: payChoice,
+            items: PayChoice.values.map((p) => DropdownMenuItem(value: p, child: Text(payChoiceLabel(p)))).toList(),
+            onChanged: (v) => setState(() => payChoice = v ?? payChoice),
             decoration: const InputDecoration(labelText: 'Nasıl Ödendi?'),
-          ),
-          if (needAccount)
-            DropdownButtonFormField<String>(
-              value: accountId,
-              items: accounts.map((a) => DropdownMenuItem(value: a.id, child: Text('${a.name} • ${accountKindLabel(a.kind)}'))).toList(),
-              onChanged: (v) => setState(() => accountId = v),
-              decoration: const InputDecoration(labelText: 'Hangi Hesap'),
-            ),
-          if (needCard)
+          ),          if (needCard)
             DropdownButtonFormField<String>(
               value: cardId,
               items: cards.map((c) => DropdownMenuItem(value: c.id, child: Text('${c.name} (Kesim: ${c.cutDay}, Son: ${c.dueDay})'))).toList(),
@@ -1989,8 +2264,8 @@ class _AddExpenseSheetState extends State<AddExpenseSheet> {
                   amount: amount,
                   category: category,
                   description: descCtrl.text.trim(),
-                  method: method,
-                  accountId: needAccount ? accountId : null,
+                  method: (payChoice == PayChoice.creditCard ? PaymentMethod.creditCard : (payChoice == PayChoice.cash ? PaymentMethod.cash : PaymentMethod.debit)),
+                  payTag: payTagFromChoice(payChoice),
                   cardId: needCard ? cardId : null,
                   installments: needCard ? (installments < 1 ? 1 : installments) : null,
                 );
@@ -2715,7 +2990,7 @@ class _EditableTile extends StatelessWidget {
     if (onEdit == null && onDelete == null) return child;
     return Stack(
       children: [
-        child,
+        Padding(padding: const EdgeInsets.only(right: 92), child: child),
         Positioned(
           right: 10,
           top: 10,
